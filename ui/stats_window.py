@@ -1,158 +1,616 @@
+"""
+Ventana de estadísticas del vocabulario.
+
+Muestra:
+
+- estadísticas globales;
+- palabras con peor rendimiento;
+- palabras mejor dominadas;
+- distribución de palabras por nivel.
+"""
+
+from __future__ import annotations
+
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
+from typing import Any
+
 from data.sqlite_db import SQLiteDB
+from logic.stats import (
+    calculate_global_statistics,
+    calculate_word_statistics,
+    count_words_by_level,
+    get_best_mastered_words,
+    get_most_failed_words,
+)
 from utils.helpers import get_level
 
+
 class StatsWindow(tk.Toplevel):
-    def __init__(self, parent):
+    """
+    Ventana de estadísticas de una base de vocabulario.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+    ) -> None:
         super().__init__(parent)
-        self.title("Estadísticas Globales")
-        self.geometry("550x550")
-        self.configure(bg="#FFFFFF")
 
-        tk.Label(self, text="📊 Estadísticas de tu base", font=("Arial", 14, "bold"), bg="#FFFFFF", fg="#333").pack(pady=10)
+        self.title("Estadísticas")
+        self.geometry("800x650")
+        self.minsize(700, 550)
 
-        # Selector de base
-        tk.Label(self, text="Seleccionar base:", font=("Arial", 12), bg="#FFFFFF", fg="#333").pack(pady=5)
+        self.db: SQLiteDB | None = None
+        self.words: list[dict[str, Any]] = []
+
         self.db_var = tk.StringVar(self)
-        dbs = SQLiteDB.list_databases()
-        if not dbs:
-            messagebox.showerror("Error", "No hay bases creadas.")
+
+        self._create_widgets()
+        self._load_databases()
+
+        self.protocol(
+            "WM_DELETE_WINDOW",
+            self._on_close,
+        )
+
+    # ------------------------------------------------------------------
+    # Interfaz
+    # ------------------------------------------------------------------
+
+    def _create_widgets(self) -> None:
+        """
+        Construye la ventana.
+        """
+        main = ttk.Frame(
+            self,
+            padding=15,
+        )
+        main.pack(
+            fill="both",
+            expand=True,
+        )
+
+        ttk.Label(
+            main,
+            text="📊 Estadísticas",
+            font=("Arial", 18, "bold"),
+        ).pack(
+            pady=(0, 15),
+        )
+
+        # --------------------------------------------------------------
+        # Selector
+        # --------------------------------------------------------------
+
+        selection_frame = ttk.Frame(main)
+        selection_frame.pack(
+            fill="x",
+            pady=(0, 15),
+        )
+
+        ttk.Label(
+            selection_frame,
+            text="Base de datos:",
+        ).pack(
+            side="left",
+            padx=(0, 8),
+        )
+
+        self.database_combo = ttk.Combobox(
+            selection_frame,
+            textvariable=self.db_var,
+            state="readonly",
+        )
+        self.database_combo.pack(
+            side="left",
+            fill="x",
+            expand=True,
+        )
+
+        ttk.Button(
+            selection_frame,
+            text="Actualizar",
+            command=self.show_stats,
+        ).pack(
+            side="left",
+            padx=(8, 0),
+        )
+
+        ttk.Button(
+            selection_frame,
+            text="Ver distribución",
+            command=self.show_progress_graph,
+        ).pack(
+            side="left",
+            padx=(8, 0),
+        )
+
+        # --------------------------------------------------------------
+        # Resumen
+        # --------------------------------------------------------------
+
+        summary_frame = ttk.LabelFrame(
+            main,
+            text="Resumen",
+            padding=10,
+        )
+        summary_frame.pack(
+            fill="x",
+            pady=(0, 10),
+        )
+
+        self.summary_label = ttk.Label(
+            summary_frame,
+            text="Selecciona una base.",
+            justify="left",
+        )
+        self.summary_label.pack(
+            anchor="w",
+        )
+
+        # --------------------------------------------------------------
+        # Rendimiento
+        # --------------------------------------------------------------
+
+        performance_frame = ttk.PanedWindow(
+            main,
+            orient="horizontal",
+        )
+        performance_frame.pack(
+            fill="both",
+            expand=True,
+        )
+
+        failed_frame = ttk.LabelFrame(
+            performance_frame,
+            text="🔥 Palabras más falladas",
+            padding=10,
+        )
+
+        mastered_frame = ttk.LabelFrame(
+            performance_frame,
+            text="🏆 Palabras mejor dominadas",
+            padding=10,
+        )
+
+        performance_frame.add(
+            failed_frame,
+            weight=1,
+        )
+        performance_frame.add(
+            mastered_frame,
+            weight=1,
+        )
+
+        self.failed_tree = self._create_word_tree(
+            failed_frame,
+        )
+
+        self.mastered_tree = self._create_word_tree(
+            mastered_frame,
+        )
+
+    # ------------------------------------------------------------------
+    # Treeviews
+    # ------------------------------------------------------------------
+
+    def _create_word_tree(
+        self,
+        parent: ttk.Frame,
+    ) -> ttk.Treeview:
+        """
+        Crea un Treeview para mostrar estadísticas de palabras.
+        """
+        columns = (
+            "word",
+            "accuracy",
+            "level",
+            "interval",
+        )
+
+        tree = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            height=12,
+        )
+
+        tree.heading(
+            "word",
+            text="Palabra",
+        )
+        tree.heading(
+            "accuracy",
+            text="Precisión",
+        )
+        tree.heading(
+            "level",
+            text="Nivel",
+        )
+        tree.heading(
+            "interval",
+            text="Intervalo",
+        )
+
+        tree.column(
+            "word",
+            width=130,
+            anchor="w",
+        )
+        tree.column(
+            "accuracy",
+            width=80,
+            anchor="center",
+        )
+        tree.column(
+            "level",
+            width=80,
+            anchor="center",
+        )
+        tree.column(
+            "interval",
+            width=70,
+            anchor="center",
+        )
+
+        scrollbar = ttk.Scrollbar(
+            parent,
+            orient="vertical",
+            command=tree.yview,
+        )
+
+        tree.configure(
+            yscrollcommand=scrollbar.set,
+        )
+
+        tree.pack(
+            side="left",
+            fill="both",
+            expand=True,
+        )
+
+        scrollbar.pack(
+            side="right",
+            fill="y",
+        )
+
+        return tree
+
+    # ------------------------------------------------------------------
+    # Bases
+    # ------------------------------------------------------------------
+
+    def _load_databases(self) -> None:
+        """
+        Carga las bases disponibles.
+        """
+        try:
+            databases = SQLiteDB.list_databases()
+
+        except Exception as error:
+            messagebox.showerror(
+                "Error",
+                f"No se pudieron cargar las bases:\n\n{error}",
+                parent=self,
+            )
+            return
+
+        self.database_combo["values"] = databases
+
+        if not databases:
+            messagebox.showwarning(
+                "Sin bases",
+                "No hay bases de datos creadas.",
+                parent=self,
+            )
             self.destroy()
             return
-        self.db_var.set(dbs[0])
-        tk.OptionMenu(self, self.db_var, *dbs).pack(pady=5)
 
-        # Botones
-        button_frame = tk.Frame(self, bg="#FFFFFF")
-        button_frame.pack(pady=10)
+        self.db_var.set(databases[0])
+        self.show_stats()
 
-        tk.Button(button_frame, text="Mostrar estadísticas", font=("Arial", 12, "bold"),
-                    bg="#4CAF50", fg="white", activebackground="#45A049",
-                    width=20, height=2, command=self.show_stats).pack(side="left", padx=5)
+    # ------------------------------------------------------------------
+    # Carga
+    # ------------------------------------------------------------------
 
-        tk.Button(button_frame, text="Gráfica de progreso", font=("Arial", 12, "bold"),
-                    bg="#2196F3", fg="white", activebackground="#1976D2",
-                    width=20, height=2, command=self.show_progress_graph).pack(side="left", padx=5)
+    def _load_words(self) -> bool:
+        """
+        Carga las palabras de la base seleccionada.
+        """
+        db_name = self.db_var.get().strip()
 
-        # Área de texto para resultados
-        self.text_area = tk.Text(self, height=20, width=65, bg="#F0F0F0", fg="#333",
-                                bd=2, relief="groove", font=("Arial", 11))
-        self.text_area.pack(pady=10)
-        self.text_area.config(state="disabled")
-    
-    def show_stats(self):
-        db_name = self.db_var.get()
-        db = SQLiteDB(db_name)
-        words = db.get_all_words()  # Esto devuelve solo word: translation
-        # Para las estadísticas necesitamos todos los campos
-        # Alternativa: obtener cada palabra con get_word
-        full_words = {}
-        for w in words:
-            full_words[w] = db.get_word(w)
+        if not db_name:
+            return False
 
-        if not full_words:
-            messagebox.showinfo("Info", "La base está vacía.")
-            db.close()
+        if self.db is not None:
+            self.db.close()
+            self.db = None
+
+        try:
+            self.db = SQLiteDB(db_name=db_name)
+
+            self.words = [
+                dict(row)
+                for row in self.db.get_all_words()
+            ]
+
+        except Exception as error:
+            self.db = None
+
+            messagebox.showerror(
+                "Error",
+                f"No se pudieron cargar los datos:\n\n{error}",
+                parent=self,
+            )
+            return False
+
+        return True
+
+    # ------------------------------------------------------------------
+    # Estadísticas
+    # ------------------------------------------------------------------
+
+    def show_stats(self) -> None:
+        """
+        Calcula y muestra las estadísticas.
+        """
+        if not self._load_words():
             return
 
-        total_words = len(full_words)
-        total_correct = 0
-        total_incorrect = 0
-        word_stats = []
+        if not self.words:
+            self.summary_label.config(
+                text="La base de datos está vacía."
+            )
 
-        for word, info in full_words.items():
-            correct = info.get("correct", 0)
-            incorrect = info.get("incorrect", 0)
-            total_correct += correct
-            total_incorrect += incorrect
-            word_stats.append((word, correct, incorrect))
+            self._clear_tree(
+                self.failed_tree,
+            )
+            self._clear_tree(
+                self.mastered_tree,
+            )
 
-        total_attempts = total_correct + total_incorrect
-        global_accuracy = (total_correct / total_attempts) * 100 if total_attempts > 0 else 0
+            return
 
-        most_failed = sorted(word_stats, key=lambda x: x[2], reverse=True)
-        best_mastered = sorted(word_stats, key=lambda x: (x[1], -x[2]), reverse=True)
+        global_stats = calculate_global_statistics(
+            self.words,
+        )
 
-        self.text_area.config(state="normal")
-        self.text_area.delete("1.0", tk.END)
+        learned = sum(
+            1
+            for word in self.words
+            if word.get("estado") == "aprendido"
+        )
 
-        self.text_area.insert(tk.END, "📊 ESTADÍSTICAS GLOBALES\n")
-        self.text_area.insert(tk.END, "="*40 + "\n\n")
-        self.text_area.insert(tk.END, f"Total palabras: {total_words}\n")
-        self.text_area.insert(tk.END, f"Aciertos acumulados: {total_correct}\n")
-        self.text_area.insert(tk.END, f"Fallos acumulados: {total_incorrect}\n")
-        self.text_area.insert(tk.END, f"Precisión global: {global_accuracy:.2f}%\n\n")
+        learning = sum(
+            1
+            for word in self.words
+            if word.get("estado") == "aprendiendo"
+        )
 
-        self.text_area.insert(tk.END, "🔥 Palabras más falladas:\n")
-        for word, c, i in most_failed[:5]:
-            info = full_words[word]
-            interval = info.get("interval", 1)
-            level = get_level(interval)
-            total = c + i
-            precision = (c / total) * 100 if total > 0 else 0
-            if i > 0:
-                self.text_area.insert(tk.END, f"- {word} | {level} | Precisión: {precision:.1f}% | Intervalo: {interval}\n")
+        new = sum(
+            1
+            for word in self.words
+            if word.get("estado") == "nuevo"
+        )
 
-        self.text_area.insert(tk.END, "\n🏆 Palabras mejor dominadas:\n")
-        for word, c, i in best_mastered[:5]:
-            info = full_words[word]
-            interval = info.get("interval", 1)
-            level = get_level(interval)
-            total = c + i
-            precision = (c / total) * 100 if total > 0 else 0
-            if c > 0:
-                self.text_area.insert(tk.END, f"- {word} | {level} | Precisión: {precision:.1f}% | Intervalo: {interval}\n")
+        self.summary_label.config(
+            text=(
+                f"Palabras totales: {global_stats.total_words}\n"
+                f"  • Nuevas: {new}\n"
+                f"  • Aprendiendo: {learning}\n"
+                f"  • Aprendidas: {learned}\n\n"
+                f"Aciertos acumulados: {global_stats.total_correct}\n"
+                f"Fallos acumulados: {global_stats.total_incorrect}\n"
+                f"Intentos totales: {global_stats.total_attempts}\n"
+                f"Precisión global: {global_stats.accuracy:.2f} %"
+            )
+        )
 
-        self.text_area.config(state="disabled")
-        db.close()
-    
-    def show_progress_graph(self):
-        db_name = self.db_var.get()
-        db = SQLiteDB(db_name)
-        words = db.get_all_words()
-        full_words = {w: db.get_word(w) for w in words}
+        self._fill_word_tree(
+            self.failed_tree,
+            get_most_failed_words(
+                self.words,
+                limit=5,
+            ),
+        )
 
-        level_counts = {"Nivel 1":0, "Nivel 2":0, "Nivel 3":0, "Nivel 4":0, "Nivel 5":0}
-        for info in full_words.values():
-            interval = info.get("interval", 1)
-            if interval <= 1:
-                level_counts["Nivel 1"] += 1
-            elif interval <= 3:
-                level_counts["Nivel 2"] += 1
-            elif interval <= 6:
-                level_counts["Nivel 3"] += 1
-            elif interval <= 12:
-                level_counts["Nivel 4"] += 1
-            else:
-                level_counts["Nivel 5"] += 1
+        self._fill_word_tree(
+            self.mastered_tree,
+            get_best_mastered_words(
+                self.words,
+                limit=5,
+            ),
+        )
 
-        win = tk.Toplevel(self)
-        win.title("Distribución de Progreso")
-        canvas_width, canvas_height = 500, 350
-        c = tk.Canvas(win, width=canvas_width, height=canvas_height, bg="white")
-        c.pack()
+    def _fill_word_tree(
+        self,
+        tree: ttk.Treeview,
+        statistics: list[Any],
+    ) -> None:
+        """
+        Rellena un Treeview con estadísticas de palabras.
+        """
+        self._clear_tree(tree)
 
-        levels = list(level_counts.keys())
-        values = list(level_counts.values())
-        max_value = max(values) if values else 1
+        for item in statistics:
+            tree.insert(
+                "",
+                tk.END,
+                values=(
+                    item.word,
+                    f"{item.accuracy:.1f} %",
+                    get_level(item.interval),
+                    f"{item.interval} días",
+                ),
+            )
 
-        bar_width = 60
-        gap = 25
-        left_margin = 60
-        bottom_margin = 50
-        colors = ["#ff4d4d", "#ff9933", "#ffdd33", "#66cc66", "#3399ff"]
+    @staticmethod
+    def _clear_tree(
+        tree: ttk.Treeview,
+    ) -> None:
+        """
+        Vacía un Treeview.
+        """
+        for item in tree.get_children():
+            tree.delete(item)
 
-        for i, val in enumerate(values):
-            x0 = left_margin + i * (bar_width + gap)
-            y0 = canvas_height - bottom_margin
+    # ------------------------------------------------------------------
+    # Gráfica
+    # ------------------------------------------------------------------
+
+    def show_progress_graph(self) -> None:
+        """
+        Muestra una gráfica sencilla de distribución por niveles.
+
+        Se utiliza Canvas para evitar dependencias externas.
+        """
+        if not self._load_words():
+            return
+
+        if not self.words:
+            messagebox.showinfo(
+                "Sin datos",
+                "La base no contiene palabras.",
+                parent=self,
+            )
+            return
+
+        level_counts = count_words_by_level(
+            self.words,
+        )
+
+        window = tk.Toplevel(self)
+        window.title("Distribución de progreso")
+        window.geometry("650x450")
+        window.minsize(600, 400)
+
+        canvas_width = 620
+        canvas_height = 380
+
+        canvas = tk.Canvas(
+            window,
+            width=canvas_width,
+            height=canvas_height,
+            background="white",
+            highlightthickness=0,
+        )
+        canvas.pack(
+            fill="both",
+            expand=True,
+            padx=15,
+            pady=15,
+        )
+
+        levels = list(
+            level_counts.keys()
+        )
+        values = list(
+            level_counts.values()
+        )
+
+        maximum = max(
+            values,
+            default=1,
+        )
+
+        left = 70
+        bottom = canvas_height - 60
+        chart_height = canvas_height - 110
+        bar_width = 65
+        gap = 30
+
+        # Ejes
+        canvas.create_line(
+            left,
+            30,
+            left,
+            bottom,
+            width=2,
+        )
+
+        canvas.create_line(
+            left,
+            bottom,
+            canvas_width - 20,
+            bottom,
+            width=2,
+        )
+
+        canvas.create_text(
+            canvas_width // 2,
+            20,
+            text="📊 Distribución de palabras por nivel",
+            font=("Arial", 14, "bold"),
+        )
+
+        for index, level in enumerate(levels):
+            value = values[index]
+
+            x0 = left + 25 + index * (
+                bar_width + gap
+            )
             x1 = x0 + bar_width
-            y1 = y0 - (val / max_value) * (canvas_height - bottom_margin - 20)
-            c.create_rectangle(x0, y1, x1, y0, fill=colors[i], outline="black", width=1)
-            c.create_text((x0 + x1)//2, y1 - 10, text=str(val), font=("Arial", 10, "bold"), anchor="s")
-            c.create_text((x0 + x1)//2, y0 + 15, text=levels[i], font=("Arial", 10, "bold"), anchor="n")
 
-        c.create_line(left_margin-10, 10, left_margin-10, canvas_height - bottom_margin, width=2)
-        c.create_line(left_margin-10, canvas_height - bottom_margin, canvas_width - 10, canvas_height - bottom_margin, width=2)
-        c.create_text(canvas_width//2, 20, text="📊 Distribución de palabras por nivel", font=("Arial", 14, "bold"), fill="black")
-        db.close()
+            bar_height = (
+                (value / maximum) * chart_height
+                if maximum > 0
+                else 0
+            )
+
+            y1 = bottom - bar_height
+
+            canvas.create_rectangle(
+                x0,
+                y1,
+                x1,
+                bottom,
+                fill=self._get_level_color(level),
+                outline="black",
+            )
+
+            canvas.create_text(
+                (x0 + x1) // 2,
+                y1 - 10,
+                text=str(value),
+                font=("Arial", 10, "bold"),
+            )
+
+            canvas.create_text(
+                (x0 + x1) // 2,
+                bottom + 15,
+                text=level,
+                font=("Arial", 9, "bold"),
+            )
+
+    @staticmethod
+    def _get_level_color(
+        level: str,
+    ) -> str:
+        """
+        Devuelve el color visual asociado a un nivel.
+        """
+        return {
+            "Nivel 1": "#ff4d4d",
+            "Nivel 2": "#ff9933",
+            "Nivel 3": "#ffdd33",
+            "Nivel 4": "#66cc66",
+            "Nivel 5": "#3399ff",
+        }.get(
+            level,
+            "#999999",
+        )
+
+    # ------------------------------------------------------------------
+    # Cierre
+    # ------------------------------------------------------------------
+
+    def _on_close(self) -> None:
+        """
+        Cierra la conexión y la ventana.
+        """
+        if self.db is not None:
+            self.db.close()
+            self.db = None
+
+        self.destroy()

@@ -1,150 +1,263 @@
-import tkinter as tk
-from tkinter import messagebox
-import random
-from datetime import datetime, date
-from data.sqlite_db import SQLiteDB
-from logic.quiz_logic import get_adaptive_words, get_review_words
+"""
+Lógica para el cálculo de estadísticas del vocabulario.
 
-class QuizWindow(tk.Toplevel):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.title("Quiz de Francés")
-        self.geometry("500x500")
-        self.configure(bg="#F5F5F5")
+Este módulo no depende de Tkinter ni de SQLite directamente. Recibe una
+colección de registros de palabras y devuelve estadísticas listas para que
+la interfaz las presente.
+"""
 
-        tk.Label(self, text="📝 Quiz de Vocabulario", font=("Arial", 16, "bold"),
-                 bg="#F5F5F5", fg="#333").pack(pady=15)
+from __future__ import annotations
 
-        tk.Label(self, text="Seleccionar base:", font=("Arial", 12), bg="#F5F5F5", fg="#333").pack(pady=5)
-        self.db_var = tk.StringVar(self)
-        dbs = SQLiteDB.list_databases()
-        if not dbs:
-            messagebox.showerror("Error", "No hay bases creadas.")
-            self.destroy()
-            return
-        self.db_var.set(dbs[0])
-        tk.OptionMenu(self, self.db_var, *dbs).pack(pady=5)
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any
 
-        tk.Label(self, text="Modo de juego:", font=("Arial", 12), bg="#F5F5F5", fg="#333").pack(pady=10)
-        self.mode = tk.StringVar(value="normal")
-        modes = [
-            ("Francés → Español", "normal"),
-            ("Español → Francés", "inverse"),
-            ("🧠 Repaso Mixto Inteligente", "smart_review"),
-            ("🔥 Palabras problemáticas", "review"),
-            ("🚀 Modo Adaptativo Inteligente", "adaptive")
-        ]
-        for text, value in modes:
-            tk.Radiobutton(self, text=text, variable=self.mode, value=value,
-                           font=("Arial", 12), bg="#F5F5F5", fg="#333", anchor="w").pack(fill="x", padx=20)
 
-        self.review_count = tk.IntVar(value=10)
-        count_frame = tk.Frame(self, bg="#F5F5F5")
-        count_frame.pack(pady=10)
-        tk.Label(count_frame, text="Cantidad de palabras:", font=("Arial", 12), bg="#F5F5F5", fg="#333").pack(side="left", padx=5)
-        for n in [10, 15, 20]:
-            tk.Radiobutton(count_frame, text=str(n), variable=self.review_count, value=n,
-                           font=("Arial", 12), bg="#F5F5F5", fg="#333").pack(side="left", padx=5)
+@dataclass(slots=True, frozen=True)
+class WordStatistics:
+    """
+    Estadísticas de una palabra concreta.
+    """
 
-        tk.Button(self, text="Iniciar Quiz", font=("Arial", 12, "bold"),
-                  bg="#4CAF50", fg="white", activebackground="#45A049",
-                  width=20, height=2, command=self.start_quiz).pack(pady=15)
+    word: str
+    correct: int
+    incorrect: int
+    total_attempts: int
+    accuracy: float
+    interval: int
 
-        self.question_frame = tk.Frame(self, bg="#F5F5F5")
-        self.question_frame.pack(pady=10, fill="both", expand=True)
 
-    def start_quiz(self):
-        self.db_name = self.db_var.get()
-        self.db = SQLiteDB(self.db_name)
-        all_words = self.db.get_all_words()
-        self.words = {w: self.db.get_word(w) for w in all_words}
+@dataclass(slots=True, frozen=True)
+class GlobalStatistics:
+    """
+    Estadísticas generales de una base de vocabulario.
+    """
 
-        palabras_aprendidas = [(w, info) for w, info in self.words.items() if info.get("estado") == "aprendido"]
-        if not palabras_aprendidas:
-            messagebox.showwarning("Aviso", "Primero debes aprender palabras.")
-            return
+    total_words: int
+    total_correct: int
+    total_incorrect: int
+    total_attempts: int
+    accuracy: float
 
-        self.words = dict(palabras_aprendidas)
 
-        if self.mode.get() == "adaptive":
-            self.questions = get_adaptive_words(self.words)
-        elif self.mode.get() in ("review", "smart_review"):
-            self.questions = get_review_words(self.words, self.review_count.get())
+LEVEL_RANGES = (
+    ("Nivel 1", 1),
+    ("Nivel 2", 3),
+    ("Nivel 3", 6),
+    ("Nivel 4", 12),
+    ("Nivel 5", float("inf")),
+)
+
+
+def _to_non_negative_int(
+    value: Any,
+) -> int:
+    """
+    Convierte un valor a entero no negativo.
+    """
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _normalize_words(
+    words: Iterable[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """
+    Convierte los registros a una lista filtrando entradas inválidas.
+    """
+    normalized: list[Mapping[str, Any]] = []
+
+    for info in words:
+        if isinstance(info, Mapping):
+            normalized.append(info)
+
+    return normalized
+
+
+def calculate_global_statistics(
+    words: Iterable[Mapping[str, Any]],
+) -> GlobalStatistics:
+    """
+    Calcula las estadísticas globales de una colección de palabras.
+    """
+    normalized = _normalize_words(words)
+
+    total_correct = sum(
+        _to_non_negative_int(word.get("correct", 0))
+        for word in normalized
+    )
+
+    total_incorrect = sum(
+        _to_non_negative_int(word.get("incorrect", 0))
+        for word in normalized
+    )
+
+    total_attempts = total_correct + total_incorrect
+
+    accuracy = (
+        (total_correct / total_attempts) * 100
+        if total_attempts > 0
+        else 0.0
+    )
+
+    return GlobalStatistics(
+        total_words=len(normalized),
+        total_correct=total_correct,
+        total_incorrect=total_incorrect,
+        total_attempts=total_attempts,
+        accuracy=accuracy,
+    )
+
+
+def calculate_word_statistics(
+    words: Iterable[Mapping[str, Any]],
+) -> list[WordStatistics]:
+    """
+    Calcula las estadísticas individuales de todas las palabras.
+    """
+    result: list[WordStatistics] = []
+
+    for info in _normalize_words(words):
+        word = str(info.get("word", "")).strip()
+
+        if not word:
+            continue
+
+        correct = _to_non_negative_int(
+            info.get("correct", 0)
+        )
+
+        incorrect = _to_non_negative_int(
+            info.get("incorrect", 0)
+        )
+
+        total_attempts = correct + incorrect
+
+        accuracy = (
+            (correct / total_attempts) * 100
+            if total_attempts > 0
+            else 0.0
+        )
+
+        interval = _to_non_negative_int(
+            info.get("interval", 0)
+        )
+
+        result.append(
+            WordStatistics(
+                word=word,
+                correct=correct,
+                incorrect=incorrect,
+                total_attempts=total_attempts,
+                accuracy=accuracy,
+                interval=interval,
+            )
+        )
+
+    return result
+
+
+def get_most_failed_words(
+    words: Iterable[Mapping[str, Any]],
+    limit: int = 5,
+) -> list[WordStatistics]:
+    """
+    Obtiene las palabras con mayor número de errores.
+
+    Como desempate se utiliza la precisión más baja.
+    """
+    if limit < 1:
+        return []
+
+    statistics = calculate_word_statistics(words)
+
+    failed = [
+        item
+        for item in statistics
+        if item.incorrect > 0
+    ]
+
+    failed.sort(
+        key=lambda item: (
+            item.incorrect,
+            -item.accuracy,
+        ),
+        reverse=True,
+    )
+
+    return failed[:limit]
+
+
+def get_best_mastered_words(
+    words: Iterable[Mapping[str, Any]],
+    limit: int = 5,
+) -> list[WordStatistics]:
+    """
+    Obtiene las palabras con mejores resultados.
+
+    Se prioriza:
+
+    1. precisión;
+    2. número de aciertos;
+    3. menor número de errores.
+    """
+    if limit < 1:
+        return []
+
+    statistics = calculate_word_statistics(words)
+
+    mastered = [
+        item
+        for item in statistics
+        if item.correct > 0
+    ]
+
+    mastered.sort(
+        key=lambda item: (
+            item.accuracy,
+            item.correct,
+            -item.incorrect,
+        ),
+        reverse=True,
+    )
+
+    return mastered[:limit]
+
+
+def count_words_by_level(
+    words: Iterable[Mapping[str, Any]],
+) -> dict[str, int]:
+    """
+    Cuenta cuántas palabras hay en cada nivel de aprendizaje.
+
+    Los niveles se determinan mediante el intervalo de repaso.
+    """
+    counts = {
+        "Nivel 1": 0,
+        "Nivel 2": 0,
+        "Nivel 3": 0,
+        "Nivel 4": 0,
+        "Nivel 5": 0,
+    }
+
+    for info in _normalize_words(words):
+        interval = _to_non_negative_int(
+            info.get("interval", 0)
+        )
+
+        if interval <= 1:
+            level = "Nivel 1"
+        elif interval <= 3:
+            level = "Nivel 2"
+        elif interval <= 6:
+            level = "Nivel 3"
+        elif interval <= 12:
+            level = "Nivel 4"
         else:
-            self.questions = list(self.words.items())
-            random.shuffle(self.questions)
+            level = "Nivel 5"
 
-        self.index = 0
-        self.correct = 0
-        self.incorrect_words = []
+        counts[level] += 1
 
-        self.ask_question()
-
-    def ask_question(self):
-        if self.index >= len(self.questions):
-            self.finish_quiz()
-            return
-
-        self.clear_window()
-        self.current_word, self.current_data = self.questions[self.index]
-
-        if self.mode.get() in ("normal", "review"):
-            question_text = self.current_word
-            self.current_direction = "forward"
-        elif self.mode.get() == "inverse":
-            question_text = self.current_data["translation"]
-            self.current_direction = "inverse"
-        elif self.mode.get() == "smart_review":
-            self.current_direction = random.choice(["forward", "inverse"])
-            question_text = self.current_word if self.current_direction == "forward" else self.current_data["translation"]
-
-        tk.Label(self, text=f"Traduce: {question_text}", font=("Arial", 14)).pack(pady=20)
-
-        self.answer_entry = tk.Entry(self)
-        self.answer_entry.pack()
-        self.answer_entry.focus()
-        self.answer_entry.bind("<Return>", lambda e: self.check_answer())
-        tk.Button(self, text="Responder", command=self.check_answer).pack(pady=5)
-
-    def check_answer(self):
-        user_answer = self.answer_entry.get().strip().lower()
-        correct_answer = (self.current_data["translation"].lower() if self.current_direction == "forward"
-                        else self.current_word.lower())
-        info = self.current_data
-
-        if user_answer == correct_answer:
-            self.correct += 1
-            info['correct'] += 1
-            info['streak'] += 1
-            info['interval'] = max(1, int(info['interval'] * 1.8))
-        else:
-            info['incorrect'] += 1
-            info['streak'] = 0
-            info['interval'] = 1
-            self.incorrect_words.append(self.current_word)
-
-        info['last_seen'] = str(date.today())
-
-        # Corregido: eliminamos 'word' de los kwargs para evitar TypeError
-        info_to_update = info.copy()
-        info_to_update.pop("word", None)
-
-        self.db.update_word(self.current_word, **info_to_update)
-
-        self.index += 1
-        self.ask_question()
-
-    def finish_quiz(self):
-        total = len(self.questions)
-        percentage = (self.correct / total) * 100 if total > 0 else 0
-        resumen = f"📊 RESULTADOS FINALES\n\nAciertos: {self.correct}/{total}\nPrecisión: {percentage:.2f}%\n\n"
-
-        if self.incorrect_words:
-            resumen += "Palabras falladas:\n" + "\n".join(f"- {w}" for w in self.incorrect_words)
-
-        messagebox.showinfo("Quiz Finalizado", resumen)
-        self.db.close()
-
-    def clear_window(self):
-        for widget in self.winfo_children():
-            widget.destroy()
+    return counts

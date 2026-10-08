@@ -1,205 +1,782 @@
+"""
+Ventana de gestión de bases de datos y vocabulario.
+
+Permite:
+
+- seleccionar una base;
+- crear nuevas bases;
+- importar vocabulario desde JSON;
+- consultar palabras;
+- añadir palabras;
+- eliminar palabras.
+"""
+
+from __future__ import annotations
+
 import tkinter as tk
-from tkinter import messagebox
-import random
-from datetime import date
-from config.config_loader import cargar_config
+from tkinter import messagebox, ttk
+
 from data.sqlite_db import SQLiteDB
+from json_sqlite_converter import open_converter
 
-class ModoAprender(tk.Toplevel):
-    def __init__(self, master):
-        super().__init__(master)
-        self.title("Aprender vocabulario")
-        self.geometry("500x400")
 
-        self.config_data = cargar_config()
+class ManageDatabaseWindow(tk.Toplevel):
+    """
+    Ventana para gestionar las bases de vocabulario.
+    """
 
-        tk.Label(self, text="Seleccionar base:", font=("Arial", 12)).pack()
+    def __init__(
+        self,
+        parent: tk.Misc,
+    ) -> None:
+        super().__init__(parent)
 
-        self.db_var = tk.StringVar(self)
-        dbs = SQLiteDB.list_databases()
-        if not dbs:
-            messagebox.showerror("Error", "No hay bases creadas.")
-            self.destroy()
-            return
-
-        self.db_var.set(dbs[0])
-        tk.OptionMenu(self, self.db_var, *dbs).pack(pady=5)
-
-        tk.Button(self, text="Cargar", command=self.cargar_base).pack(pady=10)
-
-        self.frame = tk.Frame(self)
-        self.frame.pack(fill="both", expand=True)
-
-    def cargar_base(self):
-        for widget in self.frame.winfo_children():
-            widget.destroy()
-
-        self.db_name = self.db_var.get()
-        self.db = SQLiteDB(self.db_name)
-
-        all_words = self.db.get_all_words()
-        self.palabras = []
-
-        for palabra, translation in all_words.items():
-            info = self.db.get_word(palabra)
-            # Campos extra si no existen
-            info.setdefault("estado", "nuevo")
-            info.setdefault("aciertos_aprendizaje", 0)
-            info.setdefault("intentos_aprendizaje", 0)
-            info.setdefault("sesiones_superadas", 0)
-            info["mot"] = palabra
-            info["traduction"] = info["translation"]
-            self.palabras.append(info)
-
-        total = len(self.palabras)
-        aprendidas = len([p for p in self.palabras if p["estado"] == "aprendido"])
-
-        tk.Label(self.frame, text=f"Progreso: {aprendidas}/{total}",
-                 font=("Arial", 12, "bold")).pack(pady=10)
-
-        self.label = tk.Label(self.frame, text="", font=("Arial", 16))
-        self.label.pack(pady=20)
-
-        self.entry = None
-        self.botones_opciones = []
-
-        self.boton_accion = tk.Button(self.frame, text="Siguiente", command=self.siguiente)
-        self.boton_accion.pack(pady=10)
-
-        self.indice = 0
-        self.fase = "mostrar"
-        self.seleccion = self.seleccionar_palabras()
-        self.mostrar_palabra()
-
-    def seleccionar_palabras(self):
-        total = 10
-        nuevas = [p for p in self.palabras if p["estado"] == "nuevo"]
-        repaso = [p for p in self.palabras if p["estado"] == "aprendiendo"]
-
-        n_nuevas = int(total * self.config_data["porcentaje_nuevas"])
-        n_repaso = int(total * self.config_data["porcentaje_repaso"])
-
-        seleccion = []
-        if nuevas:
-            seleccion += random.sample(nuevas, min(len(nuevas), n_nuevas))
-        if repaso:
-            seleccion += random.sample(repaso, min(len(repaso), n_repaso))
-
-        resto = total - len(seleccion)
-        todas = [p for p in self.palabras if p not in seleccion]
-        if todas:
-            seleccion += random.sample(todas, min(len(todas), resto))
-
-        random.shuffle(seleccion)
-        return seleccion
-
-    def mostrar_palabra(self):
-        if self.indice >= len(self.seleccion):
-            self.finalizar()
-            return
-
-        self.fase = "mostrar"
-        self.palabra_actual = self.seleccion[self.indice]
-
-        self.label.config(
-            text=f"{self.palabra_actual['mot']} → {self.palabra_actual['traduction']}",
-            fg=self.color_estado(self.palabra_actual["estado"])
+        self.title(
+            "Gestionar bases de datos"
         )
-        self.limpiar_widgets()
+        self.geometry(
+            "700x550"
+        )
+        self.minsize(
+            600,
+            450,
+        )
 
-    def color_estado(self, estado):
-        return {"nuevo": "gray", "aprendiendo": "orange", "aprendido": "green"}.get(estado, "black")
+        self.db_var = tk.StringVar(
+            self
+        )
+        self.word_var = tk.StringVar(
+            self
+        )
+        self.translation_var = tk.StringVar(
+            self
+        )
 
-    def mostrar_opciones(self):
-        self.fase = "opciones"
-        self.label.config(text=f"Selecciona: {self.palabra_actual['mot']}")
+        self.db_instance: SQLiteDB | None = None
+        self.converter: object | None = None
 
-        opciones = [self.palabra_actual["traduction"]]
-        distractores = [p["traduction"] for p in self.palabras if p != self.palabra_actual]
+        self._create_widgets()
+        self._load_databases()
 
-        opciones += random.sample(distractores, min(len(distractores), self.config_data["opciones_multiple"] - 1))
-        random.shuffle(opciones)
+        self.protocol(
+            "WM_DELETE_WINDOW",
+            self._on_close,
+        )
 
-        for op in opciones:
-            btn = tk.Button(self.frame, text=op, command=lambda o=op: self.respuesta_opcion(o))
-            btn.pack()
-            self.botones_opciones.append(btn)
+    # ------------------------------------------------------------------
+    # Interfaz
+    # ------------------------------------------------------------------
 
-    def mostrar_escritura(self):
-        self.fase = "escritura"
-        self.label.config(text=f"Escribe: {self.palabra_actual['mot']}")
-        self.entry = tk.Entry(self.frame)
-        self.entry.pack()
+    def _create_widgets(self) -> None:
+        """
+        Construye la interfaz.
+        """
+        main = ttk.Frame(
+            self,
+            padding=15,
+        )
+        main.pack(
+            fill="both",
+            expand=True,
+        )
 
-    def respuesta_opcion(self, opcion):
-        correcto = opcion == self.palabra_actual["traduction"]
-        if correcto:
-            messagebox.showinfo("Bien", "Correcto ✅")
-        else:
-            messagebox.showerror("Error", f"Correcta: {self.palabra_actual['traduction']}")
-        self.registrar_intento(correcto)
-        self.limpiar_widgets()
-        self.mostrar_escritura()
+        ttk.Label(
+            main,
+            text="Gestión de vocabulario",
+            font=("Arial", 18, "bold"),
+        ).pack(
+            pady=(0, 15),
+        )
 
-    def comprobar_escritura(self):
-        texto = self.entry.get().strip().lower()
-        correcta = self.palabra_actual["traduction"].lower()
-        acierto = texto == correcta
-        self.registrar_intento(acierto)
-        self.indice += 1
-        self.mostrar_palabra()
+        # --------------------------------------------------------------
+        # Base
+        # --------------------------------------------------------------
 
-    def registrar_intento(self, acierto):
-        p = self.palabra_actual
-        p["intentos_aprendizaje"] += 1
-        if acierto:
-            p["aciertos_aprendizaje"] += 1
+        database_frame = ttk.LabelFrame(
+            main,
+            text="Base de datos",
+            padding=10,
+        )
+        database_frame.pack(
+            fill="x",
+            pady=(0, 10),
+        )
 
-    def siguiente(self):
-        if self.fase == "mostrar":
-            self.limpiar_widgets()
-            self.mostrar_opciones()
-        elif self.fase == "escritura":
-            self.comprobar_escritura()
+        ttk.Label(
+            database_frame,
+            text="Base activa:",
+        ).grid(
+            row=0,
+            column=0,
+            padx=(0, 8),
+            pady=5,
+        )
 
-    def limpiar_widgets(self):
-        for btn in self.botones_opciones:
-            btn.destroy()
-        self.botones_opciones = []
-        if self.entry:
-            self.entry.destroy()
-            self.entry = None
+        self.database_combo = ttk.Combobox(
+            database_frame,
+            textvariable=self.db_var,
+            state="readonly",
+        )
+        self.database_combo.grid(
+            row=0,
+            column=1,
+            padx=5,
+            pady=5,
+            sticky="ew",
+        )
 
-    def finalizar(self):
-        for p in self.seleccion:
-            if p["intentos_aprendizaje"] == 0:
-                continue
+        self.database_combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_database_selected,
+        )
 
-            ratio = p["aciertos_aprendizaje"] / p["intentos_aprendizaje"]
+        ttk.Button(
+            database_frame,
+            text="Nueva base",
+            command=self.create_db_popup,
+        ).grid(
+            row=0,
+            column=2,
+            padx=5,
+            pady=5,
+        )
 
-            if ratio >= self.config_data["porcentaje_acierto_minimo"]:
-                p["sesiones_superadas"] += 1
-                if p["estado"] == "nuevo":
-                    p["estado"] = "aprendiendo"
-                elif p["estado"] == "aprendiendo":
-                    if p["sesiones_superadas"] >= self.config_data["sesiones_para_aprender"]:
-                        p["estado"] = "aprendido"
+        ttk.Button(
+            database_frame,
+            text="Importar JSON",
+            command=self._import_json,
+        ).grid(
+            row=0,
+            column=3,
+            padx=(5, 0),
+            pady=5,
+        )
 
-            p["aciertos_aprendizaje"] = 0
-            p["intentos_aprendizaje"] = 0
+        database_frame.columnconfigure(
+            1,
+            weight=1,
+        )
 
-            # Guardar directamente en SQLite
-            self.db.update_word(p['mot'],
-                                estado=p['estado'],
-                                aciertos_aprendizaje=p['aciertos_aprendizaje'],
-                                intentos_aprendizaje=p['intentos_aprendizaje'],
-                                sesiones_superadas=p['sesiones_superadas'],
-                                correct=p.get('correct', 0),
-                                incorrect=p.get('incorrect', 0),
-                                streak=p.get('streak', 0),
-                                interval=p.get('interval', 1),
-                                last_seen=p.get('last_seen'))
+        # --------------------------------------------------------------
+        # Palabras
+        # --------------------------------------------------------------
 
-        self.db.close()
-        messagebox.showinfo("Fin", "Sesión completada")
+        words_frame = ttk.LabelFrame(
+            main,
+            text="Vocabulario",
+            padding=10,
+        )
+        words_frame.pack(
+            fill="both",
+            expand=True,
+            pady=(0, 10),
+        )
+
+        columns = (
+            "word",
+            "translation",
+            "state",
+        )
+
+        self.words_tree = ttk.Treeview(
+            words_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+        )
+
+        self.words_tree.heading(
+            "word",
+            text="Francés",
+        )
+        self.words_tree.heading(
+            "translation",
+            text="Español",
+        )
+        self.words_tree.heading(
+            "state",
+            text="Estado",
+        )
+
+        self.words_tree.column(
+            "word",
+            width=180,
+            anchor="w",
+        )
+        self.words_tree.column(
+            "translation",
+            width=220,
+            anchor="w",
+        )
+        self.words_tree.column(
+            "state",
+            width=120,
+            anchor="center",
+        )
+
+        scrollbar = ttk.Scrollbar(
+            words_frame,
+            orient="vertical",
+            command=self.words_tree.yview,
+        )
+
+        self.words_tree.configure(
+            yscrollcommand=scrollbar.set,
+        )
+
+        self.words_tree.pack(
+            side="left",
+            fill="both",
+            expand=True,
+        )
+
+        scrollbar.pack(
+            side="right",
+            fill="y",
+        )
+
+        # --------------------------------------------------------------
+        # Añadir palabra
+        # --------------------------------------------------------------
+
+        form_frame = ttk.LabelFrame(
+            main,
+            text="Añadir palabra",
+            padding=10,
+        )
+        form_frame.pack(
+            fill="x",
+            pady=(0, 10),
+        )
+
+        ttk.Label(
+            form_frame,
+            text="Francés:",
+        ).grid(
+            row=0,
+            column=0,
+            padx=(0, 5),
+            pady=5,
+        )
+
+        ttk.Entry(
+            form_frame,
+            textvariable=self.word_var,
+        ).grid(
+            row=0,
+            column=1,
+            padx=5,
+            pady=5,
+            sticky="ew",
+        )
+
+        ttk.Label(
+            form_frame,
+            text="Español:",
+        ).grid(
+            row=0,
+            column=2,
+            padx=5,
+            pady=5,
+        )
+
+        ttk.Entry(
+            form_frame,
+            textvariable=self.translation_var,
+        ).grid(
+            row=0,
+            column=3,
+            padx=5,
+            pady=5,
+            sticky="ew",
+        )
+
+        ttk.Button(
+            form_frame,
+            text="Guardar",
+            command=self.add_word_ui,
+        ).grid(
+            row=0,
+            column=4,
+            padx=(10, 0),
+            pady=5,
+        )
+
+        form_frame.columnconfigure(
+            1,
+            weight=1,
+        )
+        form_frame.columnconfigure(
+            3,
+            weight=1,
+        )
+
+        # --------------------------------------------------------------
+        # Acciones
+        # --------------------------------------------------------------
+
+        ttk.Button(
+            main,
+            text="Eliminar seleccionada",
+            command=self.delete_word_ui,
+        ).pack(
+            anchor="e",
+        )
+
+    # ------------------------------------------------------------------
+    # Bases
+    # ------------------------------------------------------------------
+
+    def _load_databases(self) -> None:
+        """
+        Carga las bases existentes.
+        """
+        try:
+            databases = SQLiteDB.list_databases()
+
+        except Exception as error:
+            messagebox.showerror(
+                "Error",
+                (
+                    "No se pudieron cargar las bases:\n\n"
+                    f"{error}"
+                ),
+                parent=self,
+            )
+            return
+
+        self.database_combo["values"] = databases
+
+        if not databases:
+            self.db_var.set("")
+            self._close_current_database()
+            self._clear_words()
+            return
+
+        current = self.db_var.get()
+
+        if current not in databases:
+            current = databases[0]
+            self.db_var.set(current)
+
+        self.change_db(current)
+
+    def refresh_ui(self) -> None:
+        """
+        Refresca toda la ventana.
+        """
+        self._load_databases()
+
+    def _on_database_selected(
+        self,
+        _event: tk.Event,
+    ) -> None:
+        """
+        Gestiona el cambio de base.
+        """
+        self.change_db(
+            self.db_var.get()
+        )
+
+    def change_db(
+        self,
+        db_name: str,
+    ) -> None:
+        """
+        Cambia la base activa.
+        """
+        db_name = db_name.strip()
+
+        if not db_name:
+            return
+
+        self._close_current_database()
+
+        try:
+            self.db_instance = SQLiteDB(
+                db_name=db_name
+            )
+            self.load_words()
+
+        except Exception as error:
+            self.db_instance = None
+
+            messagebox.showerror(
+                "Error",
+                (
+                    "No se pudo abrir la base:\n\n"
+                    f"{error}"
+                ),
+                parent=self,
+            )
+
+    # ------------------------------------------------------------------
+    # Crear base
+    # ------------------------------------------------------------------
+
+    def create_db_popup(self) -> None:
+        """
+        Muestra el formulario de creación.
+        """
+        popup = tk.Toplevel(
+            self
+        )
+        popup.title(
+            "Nueva base de datos"
+        )
+        popup.resizable(
+            False,
+            False,
+        )
+
+        frame = ttk.Frame(
+            popup,
+            padding=20,
+        )
+        frame.pack(
+            fill="both",
+            expand=True,
+        )
+
+        ttk.Label(
+            frame,
+            text="Nombre de la base:",
+        ).pack(
+            anchor="w",
+            pady=(0, 5),
+        )
+
+        name_var = tk.StringVar()
+
+        entry = ttk.Entry(
+            frame,
+            textvariable=name_var,
+            width=35,
+        )
+        entry.pack(
+            fill="x",
+            pady=(0, 10),
+        )
+
+        entry.focus_set()
+
+        ttk.Button(
+            frame,
+            text="Crear",
+            command=lambda: self.create_db(
+                name_var.get(),
+                popup,
+            ),
+        ).pack(
+            anchor="e",
+        )
+
+        popup.bind(
+            "<Return>",
+            lambda _event: self.create_db(
+                name_var.get(),
+                popup,
+            ),
+        )
+
+    def create_db(
+        self,
+        name: str,
+        popup: tk.Toplevel,
+    ) -> None:
+        """
+        Crea una nueva base.
+        """
+        name = name.strip().lower()
+
+        if not name:
+            messagebox.showerror(
+                "Error",
+                "El nombre no puede estar vacío.",
+                parent=popup,
+            )
+            return
+
+        try:
+            if SQLiteDB.exists(name):
+                messagebox.showerror(
+                    "Error",
+                    "Ya existe una base con ese nombre.",
+                    parent=popup,
+                )
+                return
+
+            SQLiteDB.create_database(
+                name
+            )
+
+        except Exception as error:
+            messagebox.showerror(
+                "Error",
+                (
+                    "No se pudo crear la base:\n\n"
+                    f"{error}"
+                ),
+                parent=popup,
+            )
+            return
+
+        popup.destroy()
+
+        self._load_databases()
+
+        self.db_var.set(name)
+        self.change_db(name)
+
+        messagebox.showinfo(
+            "Base creada",
+            (
+                f"La base '{name}' "
+                "se ha creado correctamente."
+            ),
+            parent=self,
+        )
+
+    # ------------------------------------------------------------------
+    # Palabras
+    # ------------------------------------------------------------------
+
+    def load_words(self) -> None:
+        """
+        Carga el vocabulario de la base activa.
+        """
+        self._clear_words()
+
+        if self.db_instance is None:
+            return
+
+        try:
+            words = self.db_instance.get_all_words()
+
+            for info in words:
+                self.words_tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        info.get("word", ""),
+                        info.get("translation", ""),
+                        info.get("estado", ""),
+                    ),
+                )
+
+        except Exception as error:
+            messagebox.showerror(
+                "Error",
+                (
+                    "No se pudieron cargar las palabras:\n\n"
+                    f"{error}"
+                ),
+                parent=self,
+            )
+
+    def _clear_words(self) -> None:
+        """
+        Vacía la lista.
+        """
+        for item in self.words_tree.get_children():
+            self.words_tree.delete(
+                item
+            )
+
+    def add_word_ui(self) -> None:
+        """
+        Añade una palabra.
+        """
+        if self.db_instance is None:
+            messagebox.showwarning(
+                "Sin base",
+                "Selecciona primero una base.",
+                parent=self,
+            )
+            return
+
+        word = (
+            self.word_var
+            .get()
+            .strip()
+            .lower()
+        )
+
+        translation = (
+            self.translation_var
+            .get()
+            .strip()
+            .lower()
+        )
+
+        if not word or not translation:
+            messagebox.showwarning(
+                "Datos incompletos",
+                (
+                    "Debes introducir tanto "
+                    "la palabra como su traducción."
+                ),
+                parent=self,
+            )
+            return
+
+        try:
+            added = self.db_instance.add_word(
+                word,
+                translation,
+            )
+
+        except (
+            TypeError,
+            ValueError,
+        ) as error:
+            messagebox.showerror(
+                "Datos no válidos",
+                str(error),
+                parent=self,
+            )
+            return
+
+        except Exception as error:
+            messagebox.showerror(
+                "Error",
+                (
+                    "No se pudo guardar la palabra:\n\n"
+                    f"{error}"
+                ),
+                parent=self,
+            )
+            return
+
+        if not added:
+            messagebox.showwarning(
+                "Palabra existente",
+                (
+                    f"La palabra '{word}' "
+                    "ya existe en esta base."
+                ),
+                parent=self,
+            )
+            return
+
+        self.word_var.set("")
+        self.translation_var.set("")
+
+        self.load_words()
+
+    def delete_word_ui(self) -> None:
+        """
+        Elimina la palabra seleccionada.
+        """
+        if self.db_instance is None:
+            return
+
+        selection = self.words_tree.selection()
+
+        if not selection:
+            messagebox.showwarning(
+                "Sin selección",
+                "Selecciona una palabra.",
+                parent=self,
+            )
+            return
+
+        item = self.words_tree.item(
+            selection[0]
+        )
+
+        values = item.get(
+            "values",
+            [],
+        )
+
+        if not values:
+            return
+
+        word = str(
+            values[0]
+        )
+
+        confirmed = messagebox.askyesno(
+            "Confirmar eliminación",
+            (
+                f"¿Eliminar '{word}'?\n\n"
+                "También se eliminará todo su "
+                "progreso de aprendizaje."
+            ),
+            parent=self,
+        )
+
+        if not confirmed:
+            return
+
+        try:
+            deleted = self.db_instance.delete_word(
+                word
+            )
+
+        except Exception as error:
+            messagebox.showerror(
+                "Error",
+                (
+                    "No se pudo eliminar la palabra:\n\n"
+                    f"{error}"
+                ),
+                parent=self,
+            )
+            return
+
+        if deleted:
+            self.load_words()
+
+    # ------------------------------------------------------------------
+    # Importación
+    # ------------------------------------------------------------------
+
+    def _import_json(self) -> None:
+        """
+        Abre el conversor JSON → SQLite.
+        """
+        try:
+            self.converter = open_converter(
+                self,
+                on_close=self._on_converter_closed,
+            )
+
+        except Exception as error:
+            messagebox.showerror(
+                "Error",
+                (
+                    "No se pudo abrir el conversor:\n\n"
+                    f"{error}"
+                ),
+                parent=self,
+            )
+
+    def _on_converter_closed(self) -> None:
+        """
+        Actualiza las bases después de cerrar el conversor.
+        """
+        self.converter = None
+        self._load_databases()
+
+    # ------------------------------------------------------------------
+    # Cierre
+    # ------------------------------------------------------------------
+
+    def _close_current_database(self) -> None:
+        """
+        Cierra la conexión activa.
+        """
+        if self.db_instance is not None:
+            try:
+                self.db_instance.close()
+            finally:
+                self.db_instance = None
+
+    def _on_close(self) -> None:
+        """
+        Cierra correctamente la ventana.
+        """
+        self._close_current_database()
         self.destroy()

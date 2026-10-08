@@ -1,75 +1,400 @@
+"""
+Motor de conversión de vocabulario JSON a SQLite.
+
+Este módulo contiene exclusivamente la lógica de conversión.
+No depende de Tkinter ni de ninguna otra interfaz gráfica.
+
+Esto permite utilizar el conversor desde:
+
+- la aplicación gráfica;
+- tests automáticos;
+- scripts;
+- futuras interfaces;
+- procesos automatizados.
+"""
+
+from __future__ import annotations
+
 import json
-import os
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from data.sqlite_db import SQLiteDB  # Tu clase de manejo de SQLite
+import shutil
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
 from config.app_config import DB_FOLDER
+from data.sqlite_db import SQLiteDB
 
 
-def json_to_sqlite(json_path, output_folder=DB_FOLDER):
-    """Convierte un archivo JSON a SQLite."""
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+# ---------------------------------------------------------------------------
+# Tipos
+# ---------------------------------------------------------------------------
 
-    # Usamos el nombre del archivo JSON como nombre de la DB
-    base_name = os.path.splitext(os.path.basename(json_path))[0]
-    db_path = os.path.join(output_folder, f"{base_name}.sqlite")
+ProgressCallback = Callable[[int, int], None]
 
-    # Crear la base usando SQLiteDB
-    if SQLiteDB.exists(base_name):
-        respuesta = messagebox.askyesno(
-            "Base existente",
-            f"La base '{base_name}' ya existe.\n¿Quieres sobrescribirla?"
+
+# ---------------------------------------------------------------------------
+# Resultado de una conversión
+# ---------------------------------------------------------------------------
+
+@dataclass(slots=True, frozen=True)
+class ConversionResult:
+    """
+    Resultado de una conversión JSON → SQLite.
+    """
+
+    source: Path
+    output: Path
+    success: bool
+    words: int = 0
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Lectura y validación JSON
+# ---------------------------------------------------------------------------
+
+def load_json(
+    json_path: str | Path,
+) -> dict[str, Any]:
+    """
+    Carga un archivo JSON.
+
+    Parameters
+    ----------
+    json_path:
+        Ruta del archivo JSON.
+
+    Returns
+    -------
+    dict
+        Datos contenidos en el archivo.
+
+    Raises
+    ------
+    FileNotFoundError
+        Si el archivo no existe.
+
+    ValueError
+        Si el JSON no es válido o su estructura es incorrecta.
+    """
+    path = Path(json_path)
+
+    if not path.exists():
+        raise FileNotFoundError(
+            f"No se encontró el archivo: {path}"
         )
-        if not respuesta:
-            return
-        else:
-            # borrar archivo existente
-            import os
-            from config.app_config import DB_FOLDER
-            os.remove(os.path.join(DB_FOLDER, f"{base_name}.sqlite"))
 
-    db = SQLiteDB(base_name)
+    if not path.is_file():
+        raise ValueError(
+            f"La ruta no corresponde a un archivo: {path}"
+        )
 
-    # Insertar palabras
-    words = data.get("words", {})
+    try:
+        with path.open(
+            "r",
+            encoding="utf-8",
+        ) as file:
+            data = json.load(file)
+
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"El archivo JSON no es válido: {error}"
+        ) from error
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            "El contenido principal del JSON debe ser un objeto."
+        )
+
+    return data
+
+
+def validate_words(
+    data: dict[str, Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    """
+    Valida y normaliza las palabras contenidas en un JSON.
+
+    Returns
+    -------
+    list
+        Lista de pares ``(palabra, información)``.
+
+    Raises
+    ------
+    ValueError
+        Cuando la estructura no es válida.
+    """
+    words = data.get("words")
+
+    if words is None:
+        raise ValueError(
+            "El archivo JSON no contiene la propiedad 'words'."
+        )
+
+    if not isinstance(words, dict):
+        raise ValueError(
+            "La propiedad 'words' debe ser un objeto."
+        )
+
+    validated: list[tuple[str, dict[str, Any]]] = []
+
     for word, info in words.items():
-        db.add_word(
-            word,
-            info.get("translation", "")
+        if not isinstance(word, str):
+            raise ValueError(
+                "Las palabras deben utilizar texto como clave."
+            )
+
+        normalized_word = word.strip()
+
+        if not normalized_word:
+            raise ValueError(
+                "Se ha encontrado una palabra vacía."
+            )
+
+        if not isinstance(info, dict):
+            raise ValueError(
+                f"Los datos de '{normalized_word}' deben ser un objeto."
+            )
+
+        translation = info.get("translation")
+
+        if not isinstance(translation, str):
+            raise ValueError(
+                (
+                    f"La traducción de '{normalized_word}' "
+                    "debe ser texto."
+                )
+            )
+
+        if not translation.strip():
+            raise ValueError(
+                (
+                    f"La palabra '{normalized_word}' "
+                    "no tiene una traducción válida."
+                )
+            )
+
+        validated.append(
+            (
+                normalized_word,
+                info,
+            )
         )
-        # Actualizamos los demás campos si existen
-        db.update_word(
-            word,
-            correct=info.get("correct", 0),
-            incorrect=info.get("incorrect", 0),
-            streak=info.get("streak", 0),
-            interval=info.get("interval", 1),
-            last_seen=info.get("last_seen")
-        )
 
-    db.close()
+    return validated
 
 
-def main():
-    root = tk.Toplevel()
-    root.withdraw()  # Oculta la ventana principal
+# ---------------------------------------------------------------------------
+# Rutas
+# ---------------------------------------------------------------------------
 
-    # Selección de archivos JSON
-    json_files = filedialog.askopenfilenames(
-        title="Selecciona uno o varios archivos JSON",
-        filetypes=[("JSON files", "*.json")]
+def get_database_path(
+    json_path: str | Path,
+    output_folder: str | Path = DB_FOLDER,
+) -> Path:
+    """
+    Obtiene la ruta de la base SQLite correspondiente al JSON.
+
+    Example
+    -------
+    ``vocabulario.json`` → ``vocabulario.sqlite``
+    """
+    source = Path(json_path)
+    output = Path(output_folder)
+
+    return (
+        output
+        / f"{source.stem}.sqlite"
+    ).resolve()
+
+
+# ---------------------------------------------------------------------------
+# Conversión
+# ---------------------------------------------------------------------------
+
+def json_to_sqlite(
+    json_path: str | Path,
+    output_folder: str | Path = DB_FOLDER,
+    *,
+    overwrite: bool = False,
+    progress_callback: ProgressCallback | None = None,
+) -> ConversionResult:
+    """
+    Convierte un archivo JSON a SQLite.
+
+    Parameters
+    ----------
+    json_path:
+        Archivo JSON de origen.
+
+    output_folder:
+        Carpeta donde se creará la base.
+
+    overwrite:
+        Permite sustituir una base existente.
+
+    progress_callback:
+        Función opcional llamada después de cada palabra.
+
+        Recibe:
+
+        ``processed, total``
+
+    Returns
+    -------
+    ConversionResult
+        Información completa sobre el resultado.
+    """
+    source = Path(json_path).resolve()
+
+    output = get_database_path(
+        source,
+        output_folder,
     )
-    if not json_files:
-        messagebox.showinfo("Info", "No se seleccionaron archivos.")
-        return
 
-    # Convertir cada JSON
-    for json_file in json_files:
+    backup: Path | None = None
+
+    try:
+        # ---------------------------------------------------------------
+        # Cargar y validar
+        # ---------------------------------------------------------------
+
+        data = load_json(source)
+        words = validate_words(data)
+
+        # ---------------------------------------------------------------
+        # Preparar destino
+        # ---------------------------------------------------------------
+
+        output.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        if output.exists():
+
+            if not overwrite:
+                return ConversionResult(
+                    source=source,
+                    output=output,
+                    success=False,
+                    error=(
+                        "La base de datos ya existe y "
+                        "no se ha autorizado sobrescribirla."
+                    ),
+                )
+
+            # Crear copia de seguridad.
+            backup = output.with_suffix(
+                output.suffix + ".bak"
+            )
+
+            if backup.exists():
+                backup.unlink()
+
+            shutil.copy2(
+                output,
+                backup,
+            )
+
+            output.unlink()
+
+        # ---------------------------------------------------------------
+        # Crear base
+        # ---------------------------------------------------------------
+
+        total = len(words)
+        processed = 0
+
+        with SQLiteDB(
+            db_path=output,
+        ) as db:
+
+            for word, info in words:
+
+                added = db.add_word(
+                    word,
+                    info["translation"],
+                    commit=False,
+                )
+
+                # La base recién creada no debería tener la palabra,
+                # pero esta comprobación hace la operación más robusta.
+                if added:
+                    fields = (
+                        "estado",
+                        "aciertos_aprendizaje",
+                        "intentos_aprendizaje",
+                        "sesiones_superadas",
+                        "correct",
+                        "incorrect",
+                        "streak",
+                        "interval",
+                        "last_seen",
+                    )
+
+                    updates = {
+                        field: info[field]
+                        for field in fields
+                        if field in info
+                    }
+
+                    if updates:
+                        db.update_word(
+                            word,
+                            commit=False,
+                            **updates,
+                        )
+
+                processed += 1
+
+                if progress_callback is not None:
+                    progress_callback(
+                        processed,
+                        total,
+                    )
+
+            db.commit()
+
+        # ---------------------------------------------------------------
+        # Conversión correcta
+        # ---------------------------------------------------------------
+
+        if backup is not None and backup.exists():
+            backup.unlink()
+
+        return ConversionResult(
+            source=source,
+            output=output,
+            success=True,
+            words=total,
+        )
+
+    except Exception as error:
+        # ---------------------------------------------------------------
+        # Recuperación
+        # ---------------------------------------------------------------
+
         try:
-            json_to_sqlite(json_file)
-            print(f"✅ {os.path.basename(json_file)} → convertido correctamente")
-        except Exception as e:
-            print(f"❌ Error al convertir {json_file}: {e}")
+            if output.exists():
+                output.unlink()
+        except OSError:
+            pass
 
-    messagebox.showinfo("Finalizado", "Todos los archivos seleccionados han sido convertidos a SQLite.")
+        if backup is not None and backup.exists():
+            try:
+                shutil.move(
+                    backup,
+                    output,
+                )
+            except OSError:
+                pass
+
+        return ConversionResult(
+            source=source,
+            output=output,
+            success=False,
+            error=str(error),
+        )

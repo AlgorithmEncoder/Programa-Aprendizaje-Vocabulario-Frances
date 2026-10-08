@@ -1,41 +1,226 @@
+"""
+Ventana principal de la aplicación.
+
+Desde esta ventana se accede a las principales funcionalidades:
+
+- gestión de bases de datos;
+- aprendizaje de vocabulario;
+- quizzes;
+- estadísticas.
+"""
+
+from __future__ import annotations
+
 import tkinter as tk
+from tkinter import ttk
+
+from ui.database_window import ManageDatabaseWindow
 from ui.learn_window import ModoAprender
 from ui.quiz_window import QuizWindow
 from ui.stats_window import StatsWindow
-from ui.database_window import ManageDatabaseWindow
+
 
 class MainWindow(tk.Tk):
-    def __init__(self):
+    """
+    Ventana principal de AprenderFrances.
+    """
+
+    APP_TITLE = "🎓 Aprender Francés"
+    WINDOW_GEOMETRY = "420x500"
+
+    def __init__(self) -> None:
         super().__init__()
-        self.title("🎓 Gestor de Vocabulario Francés")
-        self.geometry("350x400")
-        self.configure(bg="#F5F5F5")  # Fondo suave
 
-        title = tk.Label(self, text="📚 Aprende Francés (Vocabulario)", font=("Arial", 16, "bold"), bg="#F5F5F5", fg="#333")
-        title.pack(pady=20)
+        self.title(self.APP_TITLE)
+        self.geometry(self.WINDOW_GEOMETRY)
+        self.minsize(380, 450)
 
-        # Contenedor de botones
-        frame = tk.Frame(self, bg="#F5F5F5")
-        frame.pack(pady=10)
-        
-        def abrir_modo_aprender():
-            ModoAprender(self)
+        self._configure_style()
+        self._create_widgets()
 
-        # Botones estilizados
-        btn_style = {"width": 25, "height": 2, "font": ("Arial", 12, "bold")}
+        self.protocol(
+            "WM_DELETE_WINDOW",
+            self._on_close,
+        )
 
-        tk.Button(frame, text="Bases de Datos", bg="#4CAF50", fg="white",
-                  activebackground="#45A049", **btn_style,
-                command=lambda: ManageDatabaseWindow(self)).pack(pady=5)
-        
-        tk.Button(frame, text="Aprender Vocabulario", bg="#1976D2", fg="white",
-                  activebackground="#1976D2", **btn_style,
-                command=abrir_modo_aprender).pack(pady=5)
+    # ------------------------------------------------------------------
+    # Configuración visual
+    # ------------------------------------------------------------------
 
-        tk.Button(frame, text="Quizes", bg="#FF9800", fg="white",
-                  activebackground="#FB8C00", **btn_style,
-                command=lambda: QuizWindow(self)).pack(pady=5)
+    def _configure_style(self) -> None:
+        """
+        Configura los estilos principales de la aplicación.
+        """
+        style = ttk.Style(self)
 
-        tk.Button(frame, text="Estadísticas", bg="#9C27B0", fg="white",
-                  activebackground="#7B1FA2", **btn_style,
-                command=lambda: StatsWindow(self)).pack(pady=5)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure(
+            "Title.TLabel",
+            font=("Arial", 20, "bold"),
+        )
+
+        style.configure(
+            "Subtitle.TLabel",
+            font=("Arial", 11),
+        )
+
+        style.configure(
+            "Menu.TButton",
+            font=("Arial", 12, "bold"),
+            padding=(15, 12),
+        )
+
+    # ------------------------------------------------------------------
+    # Interfaz
+    # ------------------------------------------------------------------
+
+    def _create_widgets(self) -> None:
+        """
+        Construye la interfaz principal.
+        """
+        main = ttk.Frame(
+            self,
+            padding=25,
+        )
+        main.pack(
+            fill="both",
+            expand=True,
+        )
+
+        # --------------------------------------------------------------
+        # Cabecera
+        # --------------------------------------------------------------
+
+        ttk.Label(
+            main,
+            text="📚 Aprender Francés",
+            style="Title.TLabel",
+            anchor="center",
+        ).pack(
+            fill="x",
+            pady=(10, 5),
+        )
+
+        ttk.Label(
+            main,
+            text="Gestor y entrenador de vocabulario",
+            style="Subtitle.TLabel",
+            anchor="center",
+        ).pack(
+            fill="x",
+            pady=(0, 25),
+        )
+
+        # --------------------------------------------------------------
+        # Menú principal
+        # --------------------------------------------------------------
+
+        menu_frame = ttk.Frame(main)
+        menu_frame.pack(
+            fill="both",
+            expand=True,
+        )
+
+        buttons = (
+            (
+                "📚 Bases de datos",
+                self.open_database_window,
+            ),
+            (
+                "🧠 Aprender vocabulario",
+                self.open_learning_window,
+            ),
+            (
+                "📝 Quiz de vocabulario",
+                self.open_quiz_window,
+            ),
+            (
+                "📊 Estadísticas",
+                self.open_stats_window,
+            ),
+        )
+
+        for text, command in buttons:
+            ttk.Button(
+                menu_frame,
+                text=text,
+                style="Menu.TButton",
+                command=command,
+            ).pack(
+                fill="x",
+                pady=6,
+            )
+
+        # --------------------------------------------------------------
+        # Pie
+        # --------------------------------------------------------------
+
+        ttk.Separator(
+            main,
+            orient="horizontal",
+        ).pack(
+            fill="x",
+            pady=(20, 10),
+        )
+
+        ttk.Label(
+            main,
+            text="AprenderFrances",
+            anchor="center",
+        ).pack(
+            fill="x",
+        )
+
+    # ------------------------------------------------------------------
+    # Navegación
+    # ------------------------------------------------------------------
+
+    def open_database_window(self) -> None:
+        """
+        Abre la ventana de gestión de bases de datos.
+        """
+        ManageDatabaseWindow(self)
+
+    def open_learning_window(self) -> None:
+        """
+        Abre el modo de aprendizaje.
+        """
+        ModoAprender(self)
+
+    def open_quiz_window(self) -> None:
+        """
+        Abre el sistema de quizzes.
+        """
+        QuizWindow(self)
+
+    def open_stats_window(self) -> None:
+        """
+        Abre la ventana de estadísticas.
+        """
+        StatsWindow(self)
+
+    # ------------------------------------------------------------------
+    # Cierre
+    # ------------------------------------------------------------------
+
+    def _on_close(self) -> None:
+        """
+        Cierra la aplicación.
+        """
+        self.destroy()
+
+
+def main() -> None:
+    """
+    Punto de entrada de la interfaz principal.
+    """
+    app = MainWindow()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
