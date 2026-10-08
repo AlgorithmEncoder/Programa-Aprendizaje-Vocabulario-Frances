@@ -1,0 +1,7 @@
+{
+  "porcentaje_nuevas": 0.6,
+  "porcentaje_repaso": 0.4,
+  "porcentaje_acierto_minimo": 0.5,
+  "sesiones_para_aprender": 2,
+  "opciones_multiple": 4
+}
