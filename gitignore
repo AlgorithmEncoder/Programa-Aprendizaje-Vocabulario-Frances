@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+*.cover
+coverage.xml
+htmlcov/
+
+# Build / distribución
+build/
+dist/
+
+# IDE / editores
+.vscode/
+.idea/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Datos generados durante la ejecución
+databases/
+results/
+
+# Variables de entorno / configuración local
+.env
+.env.*
+!.env.example

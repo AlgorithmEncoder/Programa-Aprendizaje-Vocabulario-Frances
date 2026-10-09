@@ -8,7 +8,7 @@ La ubicación depende de cómo se esté ejecutando el programa:
 
 - En desarrollo: se utiliza la carpeta raíz del proyecto.
 - En una aplicación empaquetada: se utiliza una carpeta específica dentro
-  de Documentos del usuario.
+    de Documentos del usuario.
 
 Esto permite mantener separado el código de la aplicación de los datos
 generados durante su uso.
