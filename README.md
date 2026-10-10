@@ -231,3 +231,18 @@ El proyecto se encuentra en evolución. Su desarrollo se centra en mejorar la ca
 ## Licencia
 
 No se especifica una licencia en este documento. Si deseas permitir que otras personas utilicen, modifiquen o distribuyan el código, añade un archivo `LICENSE` con la licencia que hayas elegido.
+
+## Descargar la aplicación
+
+Puedes descargar la versión ejecutable para Windows desde la sección
+[Releases](https://github.com/AlgorithmEncoder/Programa-Aprendizaje-Vocabulario-Frances/releases).
+
+Descarga el archivo correspondiente a la última versión y sigue las
+instrucciones incluidas en la publicación.
+
+## Screenshots
+![alt text](screenshots/image1.png)
+![alt text](screenshots/image2.png)
+![alt text](screenshots/image3.png)
+![alt text](screenshots/image4.png)
+![alt text](screenshots/image5.png)
